@@ -33,47 +33,14 @@ from help_menu import HELP_HOME_TEXT, HELP_SECTIONS, help_home_keyboard, help_se
 from keep_alive import keep_alive
 from user_cache import cache_user, get_cached_user
 from group_admin_cache import admin_cache_loop, get_all_cached_admins, get_cached_admins
-from db import auth_col, autoplay_col
 
 bot = Client("music_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 assistant = Client("assistant", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
 call_py = PyTgCalls(assistant)
 
-# Nexus anime artwork bundled with this project. Works on local hosting and Render.
-NEXUS_START_IMAGE = os.path.join(os.path.dirname(__file__), "nexus_start.jpg")
-
-async def send_nexus_photo(message: Message, caption: str, reply_markup=None):
-    """Send the Nexus artwork with a caption; fall back to text if photo is unavailable."""
-    try:
-        if os.path.exists(NEXUS_START_IMAGE):
-            return await message.reply_photo(
-                NEXUS_START_IMAGE, caption=caption, reply_markup=reply_markup
-            )
-    except Exception as e:
-        print(f"Nexus artwork send failed: {e}")
-    return await message.reply_text(caption, reply_markup=reply_markup)
-
 
 async def is_sudo(user_id: int) -> bool:
     return user_id == OWNER_ID or user_id in await get_sudo_users()
-
-
-async def is_music_authorized(chat_id: int, user_id: int) -> bool:
-    if await is_sudo(user_id):
-        return True
-    try:
-        member = await bot.get_chat_member(chat_id, user_id)
-        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-            return True
-    except Exception:
-        pass
-    record = await auth_col.find_one({"chat_id": chat_id, "user_id": user_id})
-    return bool(record)
-
-
-async def autoplay_enabled(chat_id: int) -> bool:
-    doc = await autoplay_col.find_one({"chat_id": chat_id})
-    return bool(doc and doc.get("enabled"))
 
 
 async def cache_target_by_id(target_id: int, reason: str):
@@ -204,8 +171,7 @@ async def cache_command_user(_, message: Message):
 @bot.on_message(filters.command("start"))
 async def start_cmd(_, message: Message):
     if message.chat.type == ChatType.PRIVATE:
-        await send_nexus_photo(
-            message,
+        await message.reply_text(
             f"✨ **Welcome, {message.from_user.mention}!** ✨\n\n"
             f"Main hu **{BOT_NAME}** — tumhara personal music aur video companion. 🎶\n\n"
             "🎧 **Group voice chat** me live gaana ya video stream kar sakta hu\n"
@@ -213,22 +179,16 @@ async def start_cmd(_, message: Message):
             "↩️ Kisi **audio/video message par reply** karke bhi VC me chala sakta hu\n"
             "🎵 Ya seedha **MP3 file** bhi bhej sakta hu, bina VC ke\n"
             "🛠 Group management (mute, ban, warn, settings) bhi sambhal sakta hu\n\n"
-            "Pehle mujhe DM me **/start** karo, phir **➕ Add me to your group** se GC me add karo. 🎶\\n"
-            "Music commands jaise /play aur /vplay **GC me** use honge.\\n"
-            "Owner/Sudo ke liye /broadcast <text> se DM + un sabhi groups me broadcast hoga jahan bot hai. 👇",
+            "Neeche **❓ Help** dabao poori command list ke liye, ya mujhe apne group me add karo! 👇",
             reply_markup=start_buttons(),
         )
     else:
-        await send_nexus_photo(
-            message,
+        await message.reply_text(
             f"Namaste! Main **{BOT_NAME}** hu.\n\n"
             "**Group voice chat me gaana/video bajane ke liye:**\n"
             "/play <naam/link> - VC me audio stream karo\n"
             "/vplay <naam/link> - VC me video stream karo\n"
             "/pause /resume /skip /stop - playback control\n"
-            "/seek 60 - 60 second par jao; /seekback 10 - 10 second peeche\n"
-            "/auth /unauth /authlist - authorized music users\n"
-            "/autoplay - current track repeat toggle\n"
             "/queue - queue dekho\n\n"
             "**Direct MP3 chahiye to:**\n"
             "/song <song name> - MP3 file bhej dunga\n\n"
@@ -621,129 +581,75 @@ async def gbanlist_cmd(_, message: Message):
     await message.reply_text(f"🔨 Globally banned users:\n{text}")
 
 
-# ---------- /broadcast: owner/sudo only; live progress + final report ----------
+# ---------- /broadcast: owner/sudo hi kar sakte hain ----------
+# Groups me bheja gaya message pin bhi kiya jata hai; personal (DM) sirf un users ko
+# jaate hai jinhone khud bot se private chat shuru ki hai — bot API se kisi aise
+# user ko DM nahi bheja ja sakta jisne bot ko kabhi start hi nahi kiya, isliye ye
+# feature khud-b-khud sirf "opted-in" logo tak seemit rehta hai.
 @bot.on_message(filters.command("broadcast"))
 async def broadcast_cmd(_, message: Message):
-    if not message.from_user or not await is_sudo(message.from_user.id):
-        return await message.reply_text("🔒 Ye command sirf owner ya sudo users use kar sakte hain.")
+    if not await is_sudo(message.from_user.id):
+        return await message.reply_text("Ye command sirf owner ya sudo users use kar sakte hain.")
 
     source = message.reply_to_message
     text = None
     if not source:
         if len(message.command) < 2:
             return await message.reply_text(
-                "📢 **Broadcast kaise karein?**\n\n"
-                "• `/broadcast Hello everyone!`\n"
-                "• Kisi text/photo/video/document par reply karke `/broadcast`\n\n"
-                "Broadcast DM aur bot ke accessible groups mein bheja jayega."
+                "Kya broadcast karna hai?\n"
+                "- Kisi message (text/photo/video/document) par **reply** karke `/broadcast` bhejo\n"
+                "- Ya `/broadcast <text>` likho"
             )
         text = message.text.split(None, 1)[1]
 
-    status = await message.reply_text(
-        "📣 **NEXUS Broadcast**\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "⏳ Chats ki list check ho rahi hai...\n"
-        "`Progress: preparing`"
-    )
+    status = await message.reply_text("📢 Broadcast shuru ho raha hai, thoda time lagega...")
 
     group_sent = group_failed = group_pinned = 0
     dm_sent = dm_failed = 0
-    processed = 0
-    try:
-        dialogs = []
-        async for dialog in bot.get_dialogs():
-            chat = dialog.chat
-            if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.PRIVATE):
-                dialogs.append(chat)
-    except Exception as e:
-        return await status.edit_text(
-            "❌ **Broadcast start nahi ho saka.**\n"
-            f"Error: `{type(e).__name__}`\n"
-            "Bot ki connectivity aur permissions check karein."
-        )
 
-    total = len(dialogs)
-    await status.edit_text(
-        "📣 **NEXUS Broadcast Started**\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"👥 Total chats: `{total}`\n"
-        "📨 Sent: `0`  |  ❌ Failed: `0`\n"
-        "🔄 Progress: `0%`"
-    )
-
-    for chat in dialogs:
+    async for dialog in bot.get_dialogs():
+        chat = dialog.chat
         is_group = chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
         is_private = chat.type == ChatType.PRIVATE
-        succeeded = False
-        for attempt in range(2):
+
+        if not (is_group or is_private):
+            continue
+
+        for attempt in range(2):  # ek retry FloodWait ke baad
             try:
                 if source:
                     sent = await source.copy(chat.id)
                 else:
                     sent = await bot.send_message(chat.id, text)
-                succeeded = True
+
                 if is_group:
                     group_sent += 1
                     try:
                         await bot.pin_chat_message(chat.id, sent.id)
                         group_pinned += 1
                     except Exception:
-                        pass
-                elif is_private:
+                        pass  # bot ke paas pin permission nahi hai is group me
+                else:
                     dm_sent += 1
                 break
             except FloodWait as e:
                 await asyncio.sleep(e.value)
+                continue
             except Exception:
+                if is_group:
+                    group_failed += 1
+                else:
+                    dm_failed += 1
                 break
-        if not succeeded:
-            if is_group:
-                group_failed += 1
-            elif is_private:
-                dm_failed += 1
-        processed += 1
-        if processed % 5 == 0 or processed == total:
-            sent_count = group_sent + dm_sent
-            failed_count = group_failed + dm_failed
-            pct = int(processed * 100 / total) if total else 100
-            try:
-                await status.edit_text(
-                    "📣 **NEXUS Broadcast Running**\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    f"🔄 Progress: `{pct}%` ({processed}/{total})\n"
-                    f"📨 Sent: `{sent_count}`  |  ❌ Failed: `{failed_count}`\n"
-                    f"🏘 Groups sent: `{group_sent}`  |  👤 DMs sent: `{dm_sent}`\n"
-                    f"📌 Groups pinned: `{group_pinned}`"
-                )
-            except Exception:
-                pass
-        await asyncio.sleep(0.08)
 
-    report = (
-        "✅ **NEXUS Broadcast Complete**\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Processed: `{processed}/{total}` chats\n"
-        f"🏘 **Groups:** `{group_sent}` sent • `{group_pinned}` pinned • `{group_failed}` failed\n"
-        f"👤 **DMs:** `{dm_sent}` sent • `{dm_failed}` failed\n"
-        f"📨 **Total sent:** `{group_sent + dm_sent}`\n"
-        f"❌ **Total failed:** `{group_failed + dm_failed}`\n\n"
-        "_DM sirf un users ko deliver ho sakta hai jinhone bot ko start kiya hai. Pin karne ke liye group mein permission chahiye._"
-    )
+        await asyncio.sleep(0.05)  # thoda gap, taaki flood-limit na lage
+
     await status.edit_text(
-        report,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❓ Help Menu", callback_data="help_main")],
-            [InlineKeyboardButton("✖️ Close Report", callback_data="broadcast_close")],
-        ]),
+        "📢 **Broadcast complete**\n\n"
+        f"🏘 Groups: {group_sent} sent, {group_pinned} pinned, {group_failed} failed\n"
+        f"👤 Personal chats: {dm_sent} sent, {dm_failed} failed\n\n"
+        "_(Personal chats me sirf un users ko bheja gaya jinhone khud bot ko pehle start kiya tha.)_"
     )
-
-
-@bot.on_callback_query(filters.regex(r"^broadcast_close$"))
-async def broadcast_close_callback(_, query: CallbackQuery):
-    if not await is_sudo(query.from_user.id):
-        return await query.answer("Sirf owner/Sudo is report ko close kar sakte hain.", show_alert=True)
-    await query.message.delete()
-    await query.answer("Report closed")
 
 
 # ---------- Global ban enforcement: har group me automatically apply ----------
@@ -1168,16 +1074,6 @@ async def start_playback(chat_id, msg=None):
     now_playing[chat_id] = state
 
     text, markup = render_now_playing_card(chat_id)
-    # Screenshot-inspired GC look: artwork first, then the live track card and controls.
-    try:
-        if os.path.exists(NEXUS_START_IMAGE):
-            await bot.send_photo(
-                chat_id,
-                NEXUS_START_IMAGE,
-                caption=f"🎧 **NEXUS MUSIC • NOW PLAYING**\\n🎵 `{item['title']}`\\n🙋 Requested by: {item.get('requested_by', 'Unknown')}",
-            )
-    except Exception as e:
-        print(f"Now-playing artwork send failed: {e}")
     sent = None
     if msg:
         try:
@@ -1212,24 +1108,11 @@ async def progress_updater(chat_id):
 
 async def _advance_or_leave(chat_id):
     """Pops the finished/skipped track, deletes its file, and moves to the next one."""
-    previous_state = now_playing.get(chat_id)
-    previous_item = get_queue(chat_id)[0] if get_queue(chat_id) else None
-    repeat_item = None
-    if previous_item and await autoplay_enabled(chat_id):
-        source = previous_item.get("url") or previous_item.get("title")
-        try:
-            path, title, duration, url = await asyncio.to_thread(download_for_vc, source)
-            repeat_item = {"path": path, "title": title, "kind": "audio", "duration": duration, "url": url, "requested_by": "Autoplay"}
-        except Exception as e:
-            print(f"Autoplay track download failed in {chat_id}: {e}")
     finished = pop_next(chat_id)
     if finished and finished.get("path") and os.path.exists(finished["path"]):
         os.remove(finished["path"])
 
     queue = get_queue(chat_id)
-    if not queue and repeat_item:
-        add_to_queue(chat_id, repeat_item)
-        queue = get_queue(chat_id)
     if queue:
         await start_playback(chat_id)
         return True
@@ -1273,8 +1156,8 @@ async def now_playing_callback(_, cq: CallbackQuery):
     if not state:
         return await cq.answer("Kuch bhi chal nahi raha.", show_alert=True)
 
-    if not await is_music_authorized(chat_id, cq.from_user.id):
-        return await cq.answer("Sirf group admins, authorized users ya Sudo users control kar sakte hain.", show_alert=True)
+    if not await is_group_admin(chat_id, cq.from_user.id):
+        return await cq.answer("Sirf group admins ya sudo users ye control kar sakte hain.", show_alert=True)
 
     if action == "playpause":
         try:
@@ -1327,7 +1210,7 @@ async def now_playing_callback(_, cq: CallbackQuery):
 
 @bot.on_message(filters.command("pause") & filters.group)
 async def pause_cmd(_, message: Message):
-    if not message.from_user or not await is_music_authorized(message.chat.id, message.from_user.id):
+    if not await is_group_admin(message.chat.id, message.from_user.id):
         return await message.reply_text("Ye command sirf group admins ya sudo users use kar sakte hain.")
     chat_id = message.chat.id
     try:
@@ -1343,7 +1226,7 @@ async def pause_cmd(_, message: Message):
 
 @bot.on_message(filters.command("resume") & filters.group)
 async def resume_cmd(_, message: Message):
-    if not message.from_user or not await is_music_authorized(message.chat.id, message.from_user.id):
+    if not await is_group_admin(message.chat.id, message.from_user.id):
         return await message.reply_text("Ye command sirf group admins ya sudo users use kar sakte hain.")
     chat_id = message.chat.id
     try:
@@ -1360,7 +1243,7 @@ async def resume_cmd(_, message: Message):
 
 @bot.on_message(filters.command("skip") & filters.group)
 async def skip_cmd(_, message: Message):
-    if not message.from_user or not await is_music_authorized(message.chat.id, message.from_user.id):
+    if not await is_group_admin(message.chat.id, message.from_user.id):
         return await message.reply_text("Ye command sirf group admins ya sudo users use kar sakte hain.")
     chat_id = message.chat.id
     moved = await _advance_or_leave(chat_id)
@@ -1372,7 +1255,7 @@ async def skip_cmd(_, message: Message):
 
 @bot.on_message(filters.command("stop") & filters.group)
 async def stop_cmd(_, message: Message):
-    if not message.from_user or not await is_music_authorized(message.chat.id, message.from_user.id):
+    if not await is_group_admin(message.chat.id, message.from_user.id):
         return await message.reply_text("Ye command sirf group admins ya sudo users use kar sakte hain.")
     chat_id = message.chat.id
     clear_queue(chat_id)
@@ -1382,86 +1265,6 @@ async def stop_cmd(_, message: Message):
     except Exception:
         pass
     await message.reply_text("Music band kar diya, queue bhi clear kar di.")
-
-
-@bot.on_message(filters.command(["seek", "seekback"]) & filters.group)
-async def seek_cmd(_, message: Message):
-    chat_id = message.chat.id
-    if not await is_music_authorized(chat_id, message.from_user.id):
-        return await message.reply_text("❌ Music control ke liye group admin, Sudo ya /auth se authorized hona zaroori hai.")
-    state = now_playing.get(chat_id)
-    if not state:
-        return await message.reply_text("Abhi koi gaana nahi chal raha.")
-    if state.get("kind") == "video":
-        return await message.reply_text("Seek abhi audio playback ke liye hai; video seek supported nahi hai.")
-    try:
-        amount = int(message.command[1]) if len(message.command) > 1 else 10
-        if amount < 0:
-            raise ValueError
-    except ValueError:
-        return await message.reply_text("Use: `/seek 60` (60-second position) ya `/seekback 10` (10 seconds peeche).")
-    current = int(get_elapsed(chat_id))
-    target = amount if message.command[0].lower() == "seek" else max(0, current - amount)
-    if state.get("duration") and target >= int(state["duration"]):
-        target = max(0, int(state["duration"]) - 1)
-    try:
-        # py-tgcalls 2.2.x exposes seek(chat_id, seconds) for active streams.
-        await call_py.seek(chat_id, target)
-        state["start_ts"] = time.time() - target - state.get("paused_total", 0)
-        if state.get("paused"):
-            state["paused_at"] = time.time()
-        await message.reply_text(f"⏩ Position `{format_time(target)}` par set kar di.")
-    except Exception as e:
-        await message.reply_text(f"Seek is playback/py-tgcalls version par available nahi hua: {e}")
-
-
-@bot.on_message(filters.command("auth") & filters.group)
-async def auth_cmd(_, message: Message):
-    if not message.from_user or not await is_group_admin(message.chat.id, message.from_user.id):
-        return await message.reply_text("Sirf group admins ya Sudo users /auth chala sakte hain.")
-    target = message.reply_to_message.from_user if message.reply_to_message and message.reply_to_message.from_user else None
-    if not target and len(message.command) > 1 and message.command[1].isdigit():
-        try: target = await bot.get_users(int(message.command[1]))
-        except Exception: pass
-    if not target:
-        return await message.reply_text("Kisi user ke message par reply karke `/auth` karein, ya `/auth USER_ID`.")
-    await auth_col.update_one({"chat_id": message.chat.id, "user_id": target.id}, {"$set": {"chat_id": message.chat.id, "user_id": target.id, "name": target.first_name}}, upsert=True)
-    await message.reply_text(f"✅ {target.mention} ab is group mein music controls use kar sakta hai.")
-
-
-@bot.on_message(filters.command("unauth") & filters.group)
-async def unauth_cmd(_, message: Message):
-    if not message.from_user or not await is_group_admin(message.chat.id, message.from_user.id):
-        return await message.reply_text("Sirf group admins ya Sudo users /unauth chala sakte hain.")
-    target = message.reply_to_message.from_user if message.reply_to_message and message.reply_to_message.from_user else None
-    if not target and len(message.command) > 1 and message.command[1].isdigit():
-        try: target = await bot.get_users(int(message.command[1]))
-        except Exception: pass
-    if not target:
-        return await message.reply_text("Kisi user ke message par reply karke `/unauth` karein, ya `/unauth USER_ID`.")
-    await auth_col.delete_one({"chat_id": message.chat.id, "user_id": target.id})
-    await message.reply_text(f"🚫 {target.mention} ki music authorization hata di.")
-
-
-@bot.on_message(filters.command("authlist") & filters.group)
-async def authlist_cmd(_, message: Message):
-    if not message.from_user or not await is_group_admin(message.chat.id, message.from_user.id):
-        return await message.reply_text("Sirf group admins ya Sudo users auth list dekh sakte hain.")
-    docs = await auth_col.find({"chat_id": message.chat.id}).to_list(length=100)
-    if not docs:
-        return await message.reply_text("Is group mein koi extra authorized user nahi hai.")
-    lines = [f"• {d.get('name', 'User')} — `{d['user_id']}`" for d in docs]
-    await message.reply_text("🔐 **Authorized Music Users**\n" + "\n".join(lines))
-
-
-@bot.on_message(filters.command("autoplay") & filters.group)
-async def autoplay_cmd(_, message: Message):
-    if not message.from_user or not await is_music_authorized(message.chat.id, message.from_user.id):
-        return await message.reply_text("Autoplay toggle karne ke liye group admin, Sudo ya authorized user hona zaroori hai.")
-    current = await autoplay_enabled(message.chat.id)
-    enabled = not current
-    await autoplay_col.update_one({"chat_id": message.chat.id}, {"$set": {"chat_id": message.chat.id, "enabled": enabled}}, upsert=True)
-    await message.reply_text("🔁 Autoplay **ON** — queue khatam hone par current track repeat hoga." if enabled else "⏹️ Autoplay **OFF** kar diya.")
 
 
 @bot.on_message(filters.command("queue") & filters.group)

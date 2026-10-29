@@ -4,8 +4,6 @@ Features:
 - `/play <song/link>` — group **voice chat** me audio stream karta hai (PyTgCalls)
 - `/vplay <video/link>` — group **voice chat** me video (audio ke saath) stream karta hai
 - `/song <song/link>` — seedha **MP3 file** bhej deta hai chat me (yt-dlp)
-- `/broadcast <text>` — Owner/Sudo ka message un sabhi known personal chats (DM) aur groups me bhejta hai jahan bot hai; kisi media/text message par reply karke `/broadcast` bhi use kar sakte ho.
-- Users ko DM broadcast paane ke liye pehle bot ke DM me `/start` karna zaroori hai. Music commands (`/play`, `/vplay`, etc.) group ke andar use karein; bot ko group me add karke zaroori admin permissions dein.
 - Kisi audio/video message par **reply** karke `/play` ya `/vplay` bhejo — wahi media VC me chalega
 - **Help menu** — `/start` ya `/help` par ❓ Help button, categorized command list ke saath
 - **Group management** — kick, mute/unmute, pin/unpin, purge, warning system, admin list, per-group settings toggle
@@ -238,22 +236,3 @@ every group it lands in.
   ko adjust karna padega.
 - Downloaded files `downloads/` folder me temporarily banti hain aur use ke baad
   khud delete ho jaati hain.
-
-
-## Pro Broadcast UI
-
-- `/broadcast <text>` ya kisi message par reply karke `/broadcast` chalayein.
-- Live progress counter percentage aur processed chats dikhata hai.
-- Completion report mein DM/group sent, failed, pinned aur total count aata hai.
-- Report mein Help Menu aur Close Report inline buttons hain.
-- Sirf owner/Sudo use kar sakte hain; Telegram access/permissions ki wajah se kuch chats fail ho sakti hain.
-
-
-## Seek, Auth aur Autoplay additions
-
-- `/seek 60` — active audio stream ko 60-second position par seek karne ki koshish.
-- `/seekback 10` — current estimated position se 10 seconds peeche jaane ki koshish. `py-tgcalls` build/stream type ke hisaab se seek support alag ho sakta hai; unsupported hone par command error dikhayegi.
-- `/auth` — kisi user ke message par reply karke ya `/auth USER_ID` se user ko group ke music controls ke liye authorize karein.
-- `/unauth` — authorization hataayein; `/authlist` — authorized users dekhein. Ye list MongoDB mein store hoti hai.
-- `/autoplay` — toggle ON/OFF. ON par queue khatam hone ke baad current audio track dobara download karke repeat hota hai; ye related-song discovery nahi hai.
-- Playback controls aur Now Playing buttons group admins, Sudo aur authorized users use kar sakte hain. Moderation commands apni existing admin restrictions par hi rehti hain.
